@@ -8,6 +8,7 @@ import glob
 import time
 import warnings
 import gc
+import astropy.units as u
 
 import yaml
 
@@ -2904,6 +2905,23 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
                     source_xy = (tab['X_WORLD'], tab['Y_WORLD'],
                                  aseg, aseg_id)
 
+#            filter_tab = prep.make_SEP_catalog(
+#                root=root,
+#                threshold=threshold,
+#                rescale_weight=rescale_weight,
+#                err_scale=phot_err_scale,
+#                get_background=photometry_background,
+#                save_to_fits=False,
+#                source_xy=source_xy,
+#                phot_apertures=phot_apertures,
+#                bkg_mask=bkg_mask,
+#                bkg_params=bkg_params,
+#                use_bkg_err=use_bkg_err,
+#                sci=sci_image,
+#                prefer_var_image=prefer_var_image,
+#            )
+
+            ####ZS####
             filter_tab = prep.make_SEP_catalog(
                 root=root,
                 threshold=threshold,
@@ -2918,18 +2936,126 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
                 use_bkg_err=use_bkg_err,
                 sci=sci_image,
                 prefer_var_image=prefer_var_image,
+                compute_auto_quantities=True,  # Ignored here, but kept for clarity
             )
 
+            # Post-process to add flux_iso and flux_auto
+            sci_file = glob.glob(f'{root}_dr?_sci.fits*')[0]
+            if not sci_file:
+                raise FileNotFoundError(f"No science file found for {root}_dr?_sci.fits*")
+
+            sci_im = pyfits.open(sci_file)
+            data = sci_im[0].data.byteswap().newbyteorder()
+            
+            wht_file = glob.glob(f'{root}_dr?_wht.fits*')[0]
+            if not wht_file:
+                raise FileNotFoundError(f"No weight file found for {root}_dr?_wht.fits*")
+            wht_im = pyfits.open(wht_file)
+            wht_data = wht_im[0].data.byteswap().newbyteorder()
+            
+            err_data = np.sqrt(wht_data)
+            mask = (~np.isfinite(err_data)) | (err_data == 0) | (~np.isfinite(data))
+            err_data[mask] = 0
+            
+            if photometry_background:
+                bkg_file = f'{root}_bkg.fits'
+                if not os.path.exists(bkg_file):
+                    raise FileNotFoundError(f"Background file {bkg_file} not found")
+                bkg_data = pyfits.open(bkg_file)[0].data
+                data_bkg = data - bkg_data
+            else:
+                data_bkg = data
+
+            ra, dec, aseg, aseg_id = source_xy
+
+            filter_tab['id'] = aseg_id
+            for col in ['xmin', 'xmax', 'ymin', 'ymax', 'a_image', 'b_image', 'theta_image']:
+                upper_col = col.upper()
+                if upper_col in tab.colnames:
+                    filter_tab[col] = tab[upper_col]
+                elif col in tab.colnames:
+                    filter_tab[col] = tab[col]
+                else:
+                    print(f"Warning: Column '{col}' not found in original tab. Available: {tab.colnames}")
+            
+            wcs = pywcs.WCS(sci_im[0].header)
+            x_pix, y_pix = wcs.all_world2pix(ra, dec, 0)
+            filter_tab['x_image'] = x_pix + 1
+            filter_tab['y_image'] = y_pix + 1
+            
+            if phot_err_scale > 0:
+                err_data *= phot_err_scale
+            
+            # Compute flux_iso
+            if 'flux_iso' not in filter_tab.colnames:
+                iso_flux, iso_fluxerr, iso_area = prep.get_seg_iso_flux(
+                    data_bkg, aseg, filter_tab, err=err_data, verbose=1
+                )
+                uJy_to_dn = 1 / (3631 * 1e6 * 10 ** (-0.4 * filter_tab.meta['ZP'][0]))
+                filter_tab['flux_iso'] = iso_flux / uJy_to_dn * u.uJy
+                filter_tab['fluxerr_iso'] = iso_fluxerr / uJy_to_dn * u.uJy
+                filter_tab['area_iso'] = iso_area
+                filter_tab['mag_iso'] = 23.9 - 2.5 * np.log10(filter_tab['flux_iso'])
+
+            # Compute flux_auto
+            if 'flux_auto' not in filter_tab.colnames:
+                auto = prep.compute_SEP_auto_params(
+                    data=data,
+                    data_bkg=data_bkg,
+                    mask=mask,
+                    pixel_scale=tab.meta.get('ASEC_0', 0.06) / tab.meta.get('APER_0', 1),
+                    err=err_data,
+                    segmap=aseg,
+                    tab=filter_tab,
+                    autoparams=[2.5, 0.35 * u.arcsec, 2.4, 3.8],
+                    flux_radii=[0.2, 0.5, 0.9],
+                    subpix=0,
+                    verbose=1
+                )
+                for c in ['flux_auto', 'fluxerr_auto', 'bkg_auto']:
+                    filter_tab[c] = auto[c] / uJy_to_dn * u.uJy
+                for c in auto.colnames:
+                    if c not in ['flux_auto', 'fluxerr_auto', 'bkg_auto']:
+                        filter_tab[c] = auto[c]
+                filter_tab['mag_auto'] = 23.9 - 2.5 * np.log10(filter_tab['flux_auto'])
+
+            sci_im.close()
+            wht_im.close()
+            
+            
+            photometry_columns = [
+                'flux_iso', 'fluxerr_iso', 'area_iso', 'mag_iso',
+                'flux_auto', 'fluxerr_auto', 'bkg_auto', 'mag_auto'
+            ]
+            for iap in range(len(phot_apertures)):
+                photometry_columns.extend([
+                    f'FLUX_APER_{iap}', f'FLUXERR_APER_{iap}', f'FLAG_APER_{iap}',
+                    f'BKG_APER_{iap}', f'MASK_APER_{iap}'
+                ])
+
+            # Transfer only desired columns
+            for c in filter_tab.colnames:
+                if c in photometry_columns:
+                    newc = '{0}_{1}'.format(filt.upper(), c)
+                    newc = newc.replace('-CLEAR','')
+                    tab[newc] = filter_tab[c]
+
             for k in filter_tab.meta:
-                
                 newk = '{0}_{1}'.format(filt.upper(), k)
                 newk = newk.replace('-CLEAR','')
                 tab.meta[newk] = filter_tab.meta[k]
-
-            for c in filter_tab.colnames:
-                newc = '{0}_{1}'.format(filt.upper(), c)
-                newc = newc.replace('-CLEAR','')
-                tab[newc] = filter_tab[c]
+            ######
+            
+#            for k in filter_tab.meta:
+#                
+#                newk = '{0}_{1}'.format(filt.upper(), k)
+#                newk = newk.replace('-CLEAR','')
+#                tab.meta[newk] = filter_tab.meta[k]
+#
+#            for c in filter_tab.colnames:
+#                newc = '{0}_{1}'.format(filt.upper(), c)
+#                newc = newc.replace('-CLEAR','')
+#                tab[newc] = filter_tab[c]
 
             # Kron total correction from EE
             newk = '{0}_PLAM'.format(filt.upper())
