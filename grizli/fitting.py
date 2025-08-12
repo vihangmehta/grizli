@@ -193,6 +193,7 @@ def run_all(
     save_figures=True,
     fig_type="png",
     diff2d=True,
+    output_suffix="",
     **kwargs,
 ):
 
@@ -412,6 +413,9 @@ def run_all(
     diff2d : bool
         Show 2D difference image in the diagnostic figures
 
+    output_suffix : str
+        Suffix to append to output filenames
+
     Returns
     -------
     mb : `~grizli.multifit.MultiBeam`
@@ -428,7 +432,7 @@ def run_all(
 
     line_hdu : `~astropy.io.fits.HDUList`
         Drizzled line maps
-
+    
     """
     import glob
     import matplotlib.pyplot as plt
@@ -947,7 +951,8 @@ def run_all(
 
     # Save the figure
     if save_figures:
-        fig.savefig("{0}_{1:05d}.full.{2}".format(group_name, id, fig_type))
+        suffix = f"_{output_suffix}" if output_suffix else ""
+        fig.savefig(f"{group_name}_{id:05d}{suffix}.full.{fig_type}")
 
     if only_stacks:
         # Need to make output with just the stack results
@@ -1010,23 +1015,23 @@ def run_all(
     line_hdu.insert(3, tfit_hdu)
 
     if write_fits_files:
-        full_file = "{0}_{1:05d}.full.fits".format(group_name, id)
+        suffix = f"_{output_suffix}" if output_suffix else ""
+        full_file = f"{group_name}_{id:05d}{suffix}.full.fits"
         line_hdu.writeto(full_file, overwrite=True, output_verify="fix")
 
         # Row for summary table
         info = summary.summary_catalog(
             dzbin=None, filter_bandpasses=[], files=[full_file]
         )
-
         info["grizli_version"] = grizli__version
-        row_file = "{0}_{1:05d}.row.fits".format(group_name, id)
+        row_file = f"{group_name}_{id:05d}{suffix}.row.fits"
         info.write(row_file, overwrite=True)
 
     # 1D spectrum
     oned_hdul = mb.oned_spectrum_to_hdu(
         tfit=tfit,
         bin=1,
-        outputfile="{0}_{1:05d}.1D.fits".format(group_name, id),
+        outputfile=f"{group_name}_{id:05d}{suffix}.1D.fits",
         loglam=loglam_1d,
     )  # , units=units1d)
     oned_hdul[0].header["GRIZLIV"] = (grizli__version, "Grizli version")
@@ -1044,11 +1049,9 @@ def run_all(
         hdu[0].header["GRIZLIV"] = (grizli__version, "Grizli version")
 
         if save_figures:
-            fig.savefig("{0}_{1:05d}.stack.{2}".format(group_name, id, fig_type))
-
+            fig.savefig(f"{group_name}_{id:05d}{suffix}.stack.{fig_type}")
         if write_fits_files:
-            hdu.writeto("{0}_{1:05d}.stack.fits".format(group_name, id), overwrite=True)
-
+            hdu.writeto(f"{group_name}_{id:05d}{suffix}.stack.fits", overwrite=True)
         hdu_stack = hdu
     else:
         hdu_stack = None
@@ -1075,16 +1078,16 @@ def run_all(
             full_line_list=full_line_list,
         )
         if save_figures:
-            fig.savefig("{0}_{1:05d}.line.{2}".format(group_name, id, fig_type))
+            fig.savefig(f"{group_name}_{id:05d}{suffix}.line.{fig_type}")
 
     if phot is not None:
         out = mb, st, fit, tfit, line_hdu
         if "pz" in phot:
             full_sed_plot(
-                mb, tfit, zfit=fit, photometry_pz=phot["pz"], save=fig_type, **sed_args
+                mb, tfit, zfit=fit, photometry_pz=phot["pz"], save=fig_type, output_suffix=output_suffix, **sed_args
             )
         else:
-            full_sed_plot(mb, tfit, zfit=fit, save=fig_type, **sed_args)
+            full_sed_plot(mb, tfit, zfit=fit, save=fig_type, output_suffix=output_suffix, **sed_args)
 
     return mb, st, fit, tfit, line_hdu
 
@@ -1103,6 +1106,7 @@ def full_sed_plot(
     zspec=None,
     spectrum_steps=False,
     xlim=[0.3, 9],
+    output_suffix="",
     **kwargs,
 ):
     """
@@ -1144,6 +1148,9 @@ def full_sed_plot(
 
     xlim : (float, float)
         Wavelength limits (microns)
+
+    output_suffix : str
+        Suffix to append to output filenames
 
     Returns
     -------
@@ -1509,7 +1516,8 @@ def full_sed_plot(
             fig.tight_layout(pad=0.5)
 
     if save:
-        fig.savefig("{0}_{1:05d}.sed.{2}".format(mb.group_name, mb.id, save))
+        suffix = f"_{output_suffix}" if output_suffix else ""
+        fig.savefig(f"{mb.group_name}_{mb.id:05d}{suffix}.full.{save}")
 
     return fig
 
@@ -1618,6 +1626,7 @@ def make_summary_catalog(
     get_sps=False,
     write_table=True,
     cdf_sigmas=CDF_SIGMAS,
+    suffix="",
 ):
     """
     Make a summary table of redshift and other parameters from a set of
@@ -1647,6 +1656,9 @@ def make_summary_catalog(
     cdf_sigmas : array-like
         Places to evaluate the CDF, in terms of "sigma" of a Gaussian
         distribution.
+
+    suffix : str
+        Suffix to append to file patterns and output files
 
     Returns
     -------
@@ -1745,10 +1757,20 @@ def make_summary_catalog(
     lines = []
     pdf_max = []
     if files is None:
-        files = glob.glob("{0}*full.fits".format(target))
+        # Use suffix in file pattern if provided
+        if suffix:
+            files = glob.glob("{0}*{1}.full.fits".format(target, suffix))
+        else:
+            files = glob.glob("{0}*full.fits".format(target))
         files.sort()
 
-    roots = ["_".join(os.path.basename(file).split("_")[:-1]) for file in files]
+    # Extract root names, handling suffix properly
+    if suffix:
+        # For files with suffix, remove both the suffix and the "full.fits" part
+        roots = ["_".join(os.path.basename(file).split("_")[:-2]) for file in files]
+    else:
+        # For files without suffix, remove just the "full.fits" part
+        roots = ["_".join(os.path.basename(file).split("_")[:-1]) for file in files]
 
     template_mags = []
     sps_params = []
@@ -1928,10 +1950,11 @@ def make_summary_catalog(
     ]
     info["idx"] = idx
 
-    # PNG columns
+    # PNG columns - include suffix in file names if provided
+    suffix_str = f"_{suffix}" if suffix else ""
     for ext in ["stack", "full", "line"]:
         png = [
-            "{0}_{1:05d}.{2}.png".format(root, id, ext)
+            "{0}_{1:05d}{2}.{3}.png".format(root, id, suffix_str, ext)
             for root, id in zip(info["root"], info["id"])
         ]
         info["png_{0}".format(ext)] = [
@@ -1968,7 +1991,9 @@ def make_summary_catalog(
     # Sextractor catalog
     if sextractor is None:
         if write_table:
-            info.write("{0}.info.fits".format(target), overwrite=True)
+            # Include suffix in output filename if provided
+            output_filename = f"{target}{suffix_str}.info.fits" if suffix else f"{target}.info.fits"
+            info.write(output_filename, overwrite=True)
         return info
 
     # sextractor = glob.glob('{0}-f*cat'.format(target))[0]
@@ -1987,7 +2012,9 @@ def make_summary_catalog(
         info.add_column(hcat[c][idx])
 
     if write_table:
-        info.write("{0}.info.fits".format(target), overwrite=True)
+        # Include suffix in output filename if provided
+        output_filename = f"{target}{suffix_str}.info.fits" if suffix else f"{target}.info.fits"
+        info.write(output_filename, overwrite=True)
 
     return info
 
