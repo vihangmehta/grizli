@@ -2819,6 +2819,11 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
     else:
         source_xy = tab['X_WORLD'], tab['Y_WORLD']
 
+    detect_cat = tab.copy()
+    detect_cat.rename_columns(
+        detect_cat.colnames, [c.lower() for c in detect_cat.colnames]
+    )
+
     if filters is None:
         #visits_file = '{0}_visits.yaml'.format(field_root)
         visits_file = find_visit_file(root=field_root)
@@ -2937,6 +2942,7 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
                 sci=sci_image,
                 prefer_var_image=prefer_var_image,
                 compute_auto_quantities=True,  # Ignored here, but kept for clarity
+                detect_cat=detect_cat,
             )
 
             # Post-process to add flux_iso and flux_auto
@@ -2947,13 +2953,23 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
             sci_im = pyfits.open(sci_file)
             data = sci_im[0].data.byteswap().newbyteorder()
             
-            wht_file = glob.glob(f'{root}_dr?_wht.fits*')[0]
-            if not wht_file:
+            wht_file = glob.glob(f'{root}_dr?_wht.fits*')
+            if len(wht_file) == 0:
                 raise FileNotFoundError(f"No weight file found for {root}_dr?_wht.fits*")
-            wht_im = pyfits.open(wht_file)
+            weight_file = wht_file[0]
+            weight_type = "MAP_WEIGHT"
+            if prefer_var_image:
+                var_file = weight_file.replace("wht.fits", "var.fits")
+                if os.path.exists(var_file) and (var_file != weight_file):
+                    weight_file = var_file
+                    weight_type = "VARIANCE"
+            wht_im = pyfits.open(weight_file)
             wht_data = wht_im[0].data.byteswap().newbyteorder()
             
-            err_data = np.sqrt(wht_data)
+            if weight_type == "VARIANCE":
+                err_data = np.sqrt(wht_data)
+            else:
+                err_data = 1 / np.sqrt(wht_data)
             mask = (~np.isfinite(err_data)) | (err_data == 0) | (~np.isfinite(data))
             err_data[mask] = 0
             
@@ -2983,22 +2999,31 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
             filter_tab['x_image'] = x_pix + 1
             filter_tab['y_image'] = y_pix + 1
             
-            if phot_err_scale > 0:
-                err_data *= phot_err_scale
+            err_scale = filter_tab.meta.get('ERR_SCALE', 1.0)
+            if isinstance(err_scale, (tuple, list, np.ndarray)):
+                err_scale = err_scale[0]
+            rescale_weight_meta = filter_tab.meta.get('RESCALEW', rescale_weight)
+            if isinstance(rescale_weight_meta, (tuple, list, np.ndarray)):
+                rescale_weight_meta = rescale_weight_meta[0]
+            if rescale_weight_meta and (err_scale is not None):
+                err_data *= err_scale
             
+            uJy_to_dn = 1 / (3631 * 1e6 * 10 ** (-0.4 * filter_tab.meta['ZP'][0]))
+
             # Compute flux_iso
-            if 'flux_iso' not in filter_tab.colnames:
+            has_flux_iso = ('flux_iso' in filter_tab.colnames) or ('FLUX_ISO' in filter_tab.colnames)
+            if not has_flux_iso:
                 iso_flux, iso_fluxerr, iso_area = prep.get_seg_iso_flux(
                     data_bkg, aseg, filter_tab, err=err_data, verbose=1
                 )
-                uJy_to_dn = 1 / (3631 * 1e6 * 10 ** (-0.4 * filter_tab.meta['ZP'][0]))
                 filter_tab['flux_iso'] = iso_flux / uJy_to_dn * u.uJy
                 filter_tab['fluxerr_iso'] = iso_fluxerr / uJy_to_dn * u.uJy
                 filter_tab['area_iso'] = iso_area
                 filter_tab['mag_iso'] = 23.9 - 2.5 * np.log10(filter_tab['flux_iso'])
 
             # Compute flux_auto
-            if 'flux_auto' not in filter_tab.colnames:
+            has_flux_auto = ('flux_auto' in filter_tab.colnames) or ('FLUX_AUTO' in filter_tab.colnames)
+            if not has_flux_auto:
                 auto = prep.compute_SEP_auto_params(
                     data=data,
                     data_bkg=data_bkg,
@@ -3029,14 +3054,15 @@ def multiband_catalog(field_root='j142724+334246', threshold=1.8, detection_back
             ]
             for iap in range(len(phot_apertures)):
                 photometry_columns.extend([
-                    f'FLUX_APER_{iap}', f'FLUXERR_APER_{iap}', f'FLAG_APER_{iap}',
-                    f'BKG_APER_{iap}', f'MASK_APER_{iap}'
+                    f'flux_aper_{iap}', f'fluxerr_aper_{iap}', f'flag_aper_{iap}',
+                    f'bkg_aper_{iap}', f'mask_aper_{iap}'
                 ])
 
             # Transfer only desired columns
             for c in filter_tab.colnames:
-                if c in photometry_columns:
-                    newc = '{0}_{1}'.format(filt.upper(), c)
+                clower = c.lower()
+                if clower in photometry_columns:
+                    newc = '{0}_{1}'.format(filt.upper(), clower)
                     newc = newc.replace('-CLEAR','')
                     tab[newc] = filter_tab[c]
 

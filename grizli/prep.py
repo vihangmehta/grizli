@@ -1834,6 +1834,10 @@ def make_SEP_catalog_from_arrays(
         specified, add a column ``nexp`` to the catalog corresponding to the number
         of entries in the list that overlap with a particular source position
 
+    detect_cat : `~astropy.table.Table`, None
+        Catalog from the detection image to use for Kron/AUTO quantities when
+        ``source_xy`` is provided.
+
     verbose : bool
         Print status messages
 
@@ -2043,6 +2047,7 @@ def make_SEP_catalog(
     extract_pixstack=int(3e7),
     sub_object_limit=4096,
     exposure_footprints=None,
+    detect_cat=None,
     **kwargs,
 ):
     """
@@ -2506,52 +2511,6 @@ def make_SEP_catalog(
         tab["area_iso"] = iso_area
         tab["mag_iso"] = 23.9 - 2.5 * np.log10(tab["flux_iso"])
 
-        # Compute FLUX_AUTO, FLUX_RADIUS
-        if compute_auto_quantities:
-            auto = compute_SEP_auto_params(
-                data,
-                data_bkg,
-                mask,
-                pixel_scale=pixel_scale,
-                err=err_data,
-                segmap=seg,
-                tab=tab,
-                autoparams=autoparams,
-                flux_radii=flux_radii,
-                subpix=subpix,
-                verbose=verbose,
-            )
-
-            for k in auto.meta:
-                tab.meta[k] = auto.meta[k]
-
-            auto_flux_cols = ["flux_auto", "fluxerr_auto", "bkg_auto"]
-            for c in auto.colnames:
-                if c in auto_flux_cols:
-                    tab[c] = auto[c] / uJy_to_dn * u.uJy
-                else:
-                    tab[c] = auto[c]
-
-            # Problematic sources
-            # bad = (tab['flux_auto'] <= 0) | (tab['flux_radius'] <= 0)
-            # bad |= (tab['kron_radius'] <= 0)
-            # tab = tab[~bad]
-
-            # Correction for flux outside Kron aperture
-            tot_corr = get_kron_tot_corr(
-                tab, drz_filter, pixel_scale=pixel_scale, photplam=drz_photplam
-            )
-
-            tab["tot_corr"] = tot_corr
-            tab.meta["TOTCFILT"] = (drz_filter, "Filter for tot_corr")
-            tab.meta["TOTCWAVE"] = (drz_photplam, "PLAM for tot_corr")
-
-            total_flux = tab["flux_auto"] * tot_corr
-            tab["mag_auto"] = 23.9 - 2.5 * np.log10(total_flux)
-            tab["magerr_auto"] = (
-                2.5 / np.log(10) * (tab["fluxerr_auto"] / tab["flux_auto"])
-            )
-
         # More flux columns
         for c in ["cflux", "flux", "peak", "cpeak"]:
             tab[c] *= 1.0 / uJy_to_dn
@@ -2570,6 +2529,9 @@ def make_SEP_catalog(
         for c in ["a", "b", "theta", "cxx", "cxy", "cyy", "x2", "y2", "xy"]:
             tab.rename_column(c, c + "_image")
 
+        if detect_cat is None:
+            detect_cat = tab
+
     else:
         if len(source_xy) == 2:
             source_x, source_y = source_xy
@@ -2587,6 +2549,52 @@ def make_SEP_catalog(
 
         tab = utils.GTable()
         tab.meta["VERSION"] = (sep.__version__, "SEP version")
+
+    # Compute FLUX_AUTO, FLUX_RADIUS
+    if compute_auto_quantities and (detect_cat is not None):
+        auto = compute_SEP_auto_params(
+            data,
+            data_bkg,
+            mask,
+            pixel_scale=pixel_scale,
+            err=err_data,
+            segmap=aseg,
+            tab=detect_cat,
+            autoparams=autoparams,
+            flux_radii=flux_radii,
+            subpix=subpix,
+            verbose=verbose,
+        )
+
+        for k in auto.meta:
+            tab.meta[k] = auto.meta[k]
+
+        auto_flux_cols = ["flux_auto", "fluxerr_auto", "bkg_auto"]
+        for c in auto.colnames:
+            if c in auto_flux_cols:
+                tab[c] = auto[c] / uJy_to_dn * u.uJy
+            else:
+                tab[c] = auto[c]
+
+        # Problematic sources
+        # bad = (tab['flux_auto'] <= 0) | (tab['flux_radius'] <= 0)
+        # bad |= (tab['kron_radius'] <= 0)
+        # tab = tab[~bad]
+
+        # Correction for flux outside Kron aperture
+        tot_corr = get_kron_tot_corr(
+            tab, drz_filter, pixel_scale=pixel_scale, photplam=drz_photplam
+        )
+
+        tab["tot_corr"] = tot_corr
+        tab.meta["TOTCFILT"] = (drz_filter, "Filter for tot_corr")
+        tab.meta["TOTCWAVE"] = (drz_photplam, "PLAM for tot_corr")
+
+        total_flux = tab["flux_auto"] * tot_corr
+        tab["mag_auto"] = 23.9 - 2.5 * np.log10(total_flux)
+        tab["magerr_auto"] = (
+            2.5 / np.log(10) * (tab["fluxerr_auto"] / tab["flux_auto"])
+        )
 
     # Exposure footprints
     # --------------------
