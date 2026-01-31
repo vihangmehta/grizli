@@ -763,6 +763,9 @@ def get_config_filename(
 
         conf_files = []
         conf_files.append(
+            os.path.join(GRIZLI_PATH, "CONF/NGDEEP_NIRISS/NIRISS_{1}_{0}.conf".format(grism, filter))
+        )
+        conf_files.append(
             os.path.join(GRIZLI_PATH, "CONF/{0}.{1}.221215.conf".format(grism, filter))
         )
         conf_files.append(
@@ -1407,6 +1410,13 @@ class TransformGrismconf(object):
                     _xmax = self.dxlam[bp1].min()
                     self.dxlam[beam] = np.arange(_xmin, _xmax, dtype=int)
                     self.nx[beam] = _xmax - _xmin + 1
+                ##VM
+                if self.nx[beam] <= 5:
+                     pad = np.arange(5)+1
+                     self.dxlam[beam] = np.sort(np.concatenate([self.dxlam[beam].min()-pad, self.dxlam[beam], self.dxlam[beam].max()+pad]))
+                     self.nx[beam] = len(self.dxlam[beam])
+                     print("!!! Fixing:", beam, self.dxlam[beam], self.nx[beam])
+                ##
 
             sens = Table()
             sens["WAVELENGTH"] = lam.astype(np.double)
@@ -1527,6 +1537,9 @@ def load_grism_config(conf_file, warnings=True):
         conf = TransformGrismconf(conf_file)
         conf.get_beams()
     elif "specwcs" in conf_file:
+        conf = TransformGrismconf(conf_file)
+        conf.get_beams()
+    elif 'NGDEEP_NIRISS' in conf_file:
         conf = TransformGrismconf(conf_file)
         conf.get_beams()
     else:
