@@ -2029,6 +2029,7 @@ def make_SEP_catalog(
     save_to_fits=True,
     include_wcs_extension=True,
     source_xy=None,
+    detection_catalog=None,
     compute_auto_quantities=True,
     autoparams=[2.5, 0.35 * u.arcsec, 2.4, 3.8],
     flux_radii=[0.2, 0.5, 0.9],
@@ -2570,6 +2571,9 @@ def make_SEP_catalog(
         for c in ["a", "b", "theta", "cxx", "cxy", "cyy", "x2", "y2", "xy"]:
             tab.rename_column(c, c + "_image")
 
+        if detection_catalog is None:
+            detection_catalog = tab
+
     else:
         if len(source_xy) == 2:
             source_x, source_y = source_xy
@@ -2587,6 +2591,64 @@ def make_SEP_catalog(
 
         tab = utils.GTable()
         tab.meta["VERSION"] = (sep.__version__, "SEP version")
+
+        # Compute iso/auto quantities when a detection_catalog is provided with shape parameters
+        if (detection_catalog is not None) and (aseg is not None):
+            tab['id'] = aseg_id
+            tab['x_image'] = source_x + 1
+            tab['y_image'] = source_y + 1
+
+            for col in ['xmin', 'xmax', 'ymin', 'ymax',
+                        'a_image', 'b_image', 'theta_image']:
+                ucol = col.upper()
+                if ucol in detection_catalog.colnames:
+                    tab[col] = detection_catalog[ucol]
+                elif col in detection_catalog.colnames:
+                    tab[col] = detection_catalog[col]
+
+            # ISO fluxes (flux within segments)
+            iso_flux, iso_fluxerr, iso_area = get_seg_iso_flux(
+                data_bkg, aseg, tab, err=err_data, verbose=1
+            )
+            tab["flux_iso"] = iso_flux / uJy_to_dn * u.uJy
+            tab["fluxerr_iso"] = iso_fluxerr / uJy_to_dn * u.uJy
+            tab["area_iso"] = iso_area
+            tab["mag_iso"] = 23.9 - 2.5 * np.log10(tab["flux_iso"])
+
+            # Compute FLUX_AUTO, FLUX_RADIUS
+            if compute_auto_quantities:
+                auto = compute_SEP_auto_params(
+                    data,
+                    data_bkg,
+                    mask,
+                    pixel_scale=pixel_scale,
+                    err=err_data,
+                    segmap=aseg,
+                    tab=tab,
+                    autoparams=autoparams,
+                    flux_radii=flux_radii,
+                    subpix=subpix,
+                    verbose=verbose,
+                )
+
+                for k in auto.meta:
+                    tab.meta[k] = auto.meta[k]
+
+                auto_flux_cols = ["flux_auto", "fluxerr_auto", "bkg_auto"]
+                for c in auto.colnames:
+                    if c in auto_flux_cols:
+                        tab[c] = auto[c] / uJy_to_dn * u.uJy
+                    else:
+                        tab[c] = auto[c]
+
+                # mag_auto without tot_corr applied. The per-filter
+                # {FILT}_TOT_CORR (using detection Kron radii + per-filter
+                # EE curve) is computed and saved separately in
+                # auto_script.py to apply when needed.
+                tab["mag_auto"] = 23.9 - 2.5 * np.log10(tab["flux_auto"])
+                tab["magerr_auto"] = (
+                    2.5 / np.log(10) * (tab["fluxerr_auto"] / tab["flux_auto"])
+                )
 
     # Exposure footprints
     # --------------------
