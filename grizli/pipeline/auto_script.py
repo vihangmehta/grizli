@@ -4813,10 +4813,14 @@ def make_filter_combinations(root, weight_fnu=2, filter_combinations=FILTER_COMB
     count = {}
     num = {}
     den = {}
+    # ── PHOTFNU-FIX BEGIN (Block 1/3): uncomment the two lines below ──
+    # photfnu_acc = {} 
     for f in filter_combinations:
         num[f] = None
         den[f] = None
         count[f] = 0
+        # photfnu_acc[f] = {'wt': 0., 'wt_over_pf': 0.}
+    # ── PHOTFNU-FIX END (Block 1/3) ──
 
     output_sci = {}
     head = {}
@@ -4917,6 +4921,14 @@ def make_filter_combinations(root, weight_fnu=2, filter_combinations=FILTER_COMB
         den[band] += den_i
         count[band] += 1
 
+        # ── PHOTFNU-FIX BEGIN (Block 2/3): uncomment the 5 lines below ──
+        # _photfnu_orig = im_i[0].header.get('PHOTFNU', None)
+        # if _photfnu_orig is not None:
+        #     _wt = np.nansum(den_i[den_i > 0])
+        #     photfnu_acc[band]['wt'] += _wt
+        #     photfnu_acc[band]['wt_over_pf'] += _wt * scl / _photfnu_orig
+        # ── PHOTFNU-FIX END (Block 2/3) ──
+
         head[band][f'CFILE{count[band]}'] = (os.path.basename(sci_file), 
                                          'Component file')
         head[band][f'CSCAL{count[band]}'] = (scl,                                                                     
@@ -4933,6 +4945,12 @@ def make_filter_combinations(root, weight_fnu=2, filter_combinations=FILTER_COMB
             mask = (~np.isfinite(sci)) | (den == 0)
             sci[mask] = 0
             wht[mask] = 0
+            # ── PHOTFNU-FIX BEGIN (Block 3/3): uncomment the 4 lines below ──
+            # if photfnu_acc[band]['wt_over_pf'] > 0:
+            #     photfnu_eff = (photfnu_acc[band]['wt']
+            #                    / photfnu_acc[band]['wt_over_pf'])
+            #     head[band]['PHOTFNU'] = photfnu_eff
+            # ── PHOTFNU-FIX END (Block 3/3) ──
 
             print('Write {0}'.format(output_sci[band]))
 
